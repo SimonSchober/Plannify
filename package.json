@@ -1,0 +1,40 @@
+{
+  "name": "plannify",
+  "version": "1.0.0",
+  "description": "",
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "dependencies": {
+    "@expo/metro-runtime": "^57.0.8",
+    "@expo/vector-icons": "^15.1.1",
+    "@react-native-async-storage/async-storage": "^3.1.1",
+    "@react-native-community/datetimepicker": "^9.1.0",
+    "@react-navigation/native": "^7.3.15",
+    "@react-navigation/stack": "^7.10.20",
+    "@rneui/base": "^5.0.0",
+    "expo": "^57.0.11",
+    "expo-linear-gradient": "^57.0.1",
+    "firebase": "^12.17.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-native": "^0.86.2",
+    "react-native-calendars": "^1.1314.0",
+    "react-native-dropdown-picker": "^5.4.6",
+    "react-native-gesture-handler": "^3.1.0",
+    "react-native-paper": "^5.15.3",
+    "react-native-safe-area-context": "^5.8.1",
+    "react-native-screens": "^4.27.0",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "babel-preset-expo": "^57.0.6"
+  }
+}
