@@ -36,17 +36,10 @@ export default class SignUp extends Component {
     };
   }
 
-  signUp = async (
-    email,
-    password,
-    school,
-    grade,
-    teacher,
-    name,
-    number,
-    username,
-  ) => {
+  
+  signUp = async () => {
     const { t } = this.context;
+    const { password, grade, number, school, email, name, username, teacher} = this.state
     if (
       email &&
       name &&
@@ -76,7 +69,7 @@ export default class SignUp extends Component {
           createdAt: new Date().toISOString(),
         });
         Alert.alert("Success", "Account created successfully!");
-        this.props.navigation.navigate("TabNavigator");
+        this.props.navigation.navigate("Login");
       } catch (error) {
         switch (error.code) {
           case "auth/email-already-in-use":
@@ -248,15 +241,7 @@ export default class SignUp extends Component {
 
             <TouchableOpacity
               onPress={() =>
-                this.signUp(
-                  this.state.email,
-                  this.state.password,
-                  this.state.school,
-                  this.state.grade,
-                  this.state.teacher,
-                  this.state.name,
-                  this.state.number,
-                )
+                this.signUp()
               }
               style={styles.btn}
             >
