@@ -9,11 +9,16 @@ import {
   TouchableOpacity,
   Alert,
   ScrollView,
+  Modal,
 } from "react-native";
 import * as Font from "expo-font";
+import QRCode from "react-native-qrcode-svg";
 import { LinearGradient } from "expo-linear-gradient";
-import { db } from "../firebaseConfig";
+import { Ionicons } from "@expo/vector-icons";
+import { db, auth } from "../firebaseConfig";
+import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { LanguageContext } from "../LanguageContext";
+import { Camera, CameraView } from "expo-camera";
 
 let customFonts = {
   font: require("../Roboto_Condensed/RobotoCondensed-Italic-VariableFont_wght.ttf"),
@@ -24,15 +29,18 @@ export default class Profile extends Component {
 
   constructor(props) {
     super(props);
+
     this.state = {
       school: "",
       number: "",
       username: "",
       name: "",
       email: "",
-      grade: "",
-      teacher: "",
       fontsLoaded: false,
+      scannerVisible: false,
+      myQrVisible: false,
+      hasCameraPermission: null,
+      scanned: false,
     };
   }
 
@@ -43,33 +51,86 @@ export default class Profile extends Component {
 
   async componentDidMount() {
     this.loadFontAsync();
-    const uid = firebase.auth().currentUser.uid;
-    const doc = await firebase.firestore().collection("Users").doc(uid).get();
-    if (doc.exists) {
-      this.setState(doc.data());
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        console.log("No user signed in.");
+        return;
+      }
+      const uid = currentUser.uid;
+      const docRef = doc(db, "User", uid);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        this.setState({
+          username: data.username || "",
+          name: data.name || "",
+          email: data.email || "",
+          school: data.school || "",
+          number: data.number || "",
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching user profile", error);
     }
   }
 
+  openScanner = async () => {
+    const { status } = await Camera.requestCameraPermissionsAsync();
+    this.setState({
+      hasCameraPermission: status === "granted",
+      scannerVisible: status === "granted",
+      scanned: false,
+    });
+    if (status !== "granted") {
+      alert("permission denied", "camera permission required to scan QR codes");
+    }
+  };
+  handleBarCodeScanned = ({ type, data }) => {
+    this.setState({
+      scanned: true,
+      scannerVisible: false,
+    });
+    alert.Alert("QR Scanned", `data:${data}`);
+  };
+
   saveProfile = async () => {
     const { t } = this.context;
-    const uid = firebase.auth().currentUser.uid;
-    await firebase.firestore().collection("Users").doc(uid).update({
-      username: this.state.username,
-      name: this.state.name,
-      school: this.state.school,
-      grade: this.state.grade,
-      email: this.state.email,
-      number: this.state.number,
-      teacher: this.state.teacher,
-    });
-    Alert.alert(t.profileUpdated);
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        console.log("No user logged in");
+        return;
+      }
+      const uid = currentUser.uid;
+      const docRef = doc(db, "Users", uid);
+      await updateDoc(docRef, {
+        username: this.state.username,
+        name: this.state.name,
+        school: this.state.school,
+        email: this.state.email,
+        number: this.state.number,
+      });
+      Alert.alert(t.profileUpdated);
+      this.props.changeTab("Dashboard");
+    } catch (error) {
+      console.error("Error saving profile", error);
+    }
   };
 
   render() {
     if (!this.state.fontsLoaded) return null;
-
-    const { school, number, username, name, email, grade, teacher } =
-      this.state;
+    const currentuid = auth.currentUser ? auth.currentUser.uid : "No User";
+    const {
+      school,
+      number,
+      username,
+      name,
+      email,
+      scannerVisible,
+      myQrVisible,
+      scanned,
+    } = this.state;
     const { t, language, setLanguage } = this.context;
     const titleMarginTop = Platform.OS === "ios" ? 50 : 10;
 
@@ -90,6 +151,122 @@ export default class Profile extends Component {
             {t.profile}
           </Text>
           <Text style={styles.subtitle}>{t.profileSubtitle}</Text>
+
+          <View style={styles.topButtonsContainer}>
+            <TouchableOpacity
+              onPress={() => this.setState({ myQrVisible: true })}
+              style={styles.topButtonWrapper}
+            >
+              <LinearGradient
+                colors={["#FF6B35", "#CC5520", "#8B3010"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.topButton}
+              >
+                <Ionicons
+                  name="qr-code-outline"
+                  size={18}
+                  color="white"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>MyQR</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <Modal
+              visible={this.state.myQrVisible}
+              onRequestClose={() => this.setState({ myQrVisible: false })}
+              transparent
+              animationType="fade"
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.qrCard}>
+                  <Text style={styles.qrCardTitle}>My QR Code</Text>
+                  <View style={styles.qrWrapper}>
+                    <QRCode
+                      value={currentuid}
+                      size={200}
+                      backgroundColor={"#ffffff"}
+                      color={"#000000"}
+                    />
+                  </View>
+                  <Text style={styles.qrSubtitle}>
+                    @{this.state.username || "User"}
+                  </Text>
+                  <TouchableOpacity
+                    style={{ marginTop: 20 }}
+                    onPress={() => this.setState({ myQrVisible: false })}
+                  >
+                    <LinearGradient
+                      colors={["#FF6B35", "#CC5520", "#8B3010"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.topButton}
+                    >
+                      <Text style={styles.topButtonText}>Close</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+
+            <TouchableOpacity
+              onPress={this.openScanner}
+              style={styles.topButtonWrapper}
+            >
+              <LinearGradient
+                colors={["#FF6B35", "#CC5520", "#8B3010"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.topButton}
+              >
+                <Ionicons
+                  name="scan-outline"
+                  size={18}
+                  color="white"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>Scan QR</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+          <Modal
+            visible={scannerVisible}
+            onRequestClose={() => this.setState({ scannerVisible: false })}
+
+            animationType="fade"
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.qrCard}>
+                <Text style={styles.qrCardTitle}>Scan QR Code</Text>
+                <View style={styles.qrWrapper}>
+                  <CameraView
+                    style={StyleSheet.absoluteFillObject}
+                      onBarcodeScanned={
+                      scanned ? undefined : this.handleBarCodeScanned
+                    }
+                    barcodeSettings={{
+                      
+                      barcodeTypes: ["qr"],
+                    }}
+                  
+                  />
+
+                  <TouchableOpacity>
+                    onPress={() => this.setState({ scannerVisible: false })}
+                    <LinearGradient
+                      colors={["#FF6B35", "#CC5520", "#8B3010"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.topButton}
+                    >
+                      <Text style={styles.topButtonText}>Close</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
 
           <View style={styles.card}>
             {/* Sprach-Toggle */}
@@ -159,20 +336,6 @@ export default class Profile extends Component {
               value={school}
               onChangeText={(school) => this.setState({ school })}
               placeholder={t.school}
-              placeholderTextColor="#938F99"
-            />
-            <TextInput
-              style={styles.input}
-              value={grade}
-              onChangeText={(grade) => this.setState({ grade })}
-              placeholder={t.grade}
-              placeholderTextColor="#938F99"
-            />
-            <TextInput
-              style={styles.input}
-              value={teacher}
-              onChangeText={(teacher) => this.setState({ teacher })}
-              placeholder={t.teacher}
               placeholderTextColor="#938F99"
             />
             <TextInput
@@ -247,7 +410,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#CAC4D0",
     alignSelf: "center",
-    marginBottom: 32,
+    marginBottom: 20,
+  },
+  topButtonsContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 12,
+    marginBottom: 24,
+  },
+  topButtonWrapper: {
+    flex: 1,
+    maxWidth: 140,
+  },
+  topButton: {
+    flexDirection: "row",
+    borderRadius: 100,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  buttonIcon: {
+    marginRight: 6,
+  },
+  qrWrapper: {
+    backgroundColor: "#FFF",
+    padding: 16,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  topButtonText: {
+    color: "white",
+    fontSize: 14,
+    fontWeight: "600",
   },
   card: {
     backgroundColor: "#2B2930",
@@ -282,6 +477,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#E6E0E9",
     marginBottom: 16,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    position: "absolute",
+    right: 0,
+    left: 0,
+    top: 0,
+    bottom: 0,
+  },
+  qrCard: {
+    backgroundColor: "#2B2930",
+    padding: 24,
+    borderRadius: 20,
+    alignItems: "center",
+    width: "80%",
+    borderWidth: 1,
+    borderColor: "#4A434C",
+  },
+  qrCardTitle: {
+    color: "#FFF",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 20,
+  },
+  qrSubtitle: {
+    color: "#CAC4D0",
+    fontSize: 16,
+    marginTop: 12,
+    fontWeight: "500",
+  },
+  modaltitle: {
+    color: "#E6E0E9",
   },
   saveButton: {
     borderRadius: 100,
