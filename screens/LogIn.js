@@ -11,7 +11,11 @@ import {
   Alert,
 } from "react-native";
 import * as Font from "expo-font";
-import { signInWithEmailAndPassword } from "firebase/auth";
+// FIX: sendPasswordResetEmail muss aus firebase/auth importiert werden
+import {
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+} from "firebase/auth";
 import { auth } from "../firebaseConfig";
 import { LanguageContext } from "../LanguageContext";
 
@@ -33,11 +37,13 @@ export default class LogIn extends Component {
 
   signIn = async (email, password) => {
     const { t } = this.context;
-    if (email && password) {
+    const cleanEmail = (email || "").trim();
+
+    if (cleanEmail && password) {
       try {
         const response = await signInWithEmailAndPassword(
           auth,
-          email,
+          cleanEmail,
           password,
         );
         if (response) {
@@ -49,6 +55,9 @@ export default class LogIn extends Component {
             Alert.alert(t.userNotFound);
             break;
           case "auth/invalid-email":
+          case "auth/wrong-password":
+          // FIX: neuere Firebase-Versionen geben diesen Code zurück
+          case "auth/invalid-credential":
             Alert.alert(t.incorrectLogin);
             break;
           default:
@@ -62,10 +71,12 @@ export default class LogIn extends Component {
 
   handleForgotPassword = async () => {
     const { t } = this.context;
-    const { email } = this.state;
+    const email = (this.state.email || "").trim();
+
     if (email) {
       try {
-        await auth.sendPasswordResetEmail(email.trim());
+        // FIX: neue Schreibweise (v9+): Funktion mit auth als erstem Parameter
+        await sendPasswordResetEmail(auth, email);
         Alert.alert(t.emailSent, t.emailSentMsg);
       } catch (error) {
         switch (error.code) {
@@ -96,7 +107,6 @@ export default class LogIn extends Component {
   render() {
     if (!this.state.fontsLoaded) return null;
 
-    const { email, password } = this.state;
     const { t, language, setLanguage } = this.context;
 
     return (
@@ -107,6 +117,7 @@ export default class LogIn extends Component {
         <View style={styles.container}>
           <View style={styles.backgroundCircle1} />
           <View style={styles.backgroundCircle2} />
+          <View style={styles.backgroundCircle3} />
 
           {/* Language Toggle*/}
           <View style={styles.langRow}>
@@ -150,14 +161,17 @@ export default class LogIn extends Component {
           <View style={styles.card}>
             <TextInput
               style={styles.input}
+              value={this.state.email}
               onChangeText={(email) => this.setState({ email })}
               placeholder={t.email}
               placeholderTextColor="#938F99"
               autoCapitalize="none"
+              autoCorrect={false}
               keyboardType="email-address"
             />
             <TextInput
               style={styles.input}
+              value={this.state.password}
               onChangeText={(password) => this.setState({ password })}
               placeholder={t.password}
               placeholderTextColor="#938F99"
@@ -215,6 +229,16 @@ const styles = StyleSheet.create({
     bottom: 300,
     left: 50,
   },
+  backgroundCircle3: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "#FFB347",
+    opacity: 0.25,
+    bottom: -60,
+    right: -50,
+  },
   langRow: {
     position: "absolute",
     top: 56,
@@ -262,9 +286,16 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   card: {
-    backgroundColor: "#2B2930",
+    backgroundColor: "rgba(43, 41, 48, 0.7)",
     borderRadius: 28,
     padding: 24,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 107, 53, 0.35)",
+    shadowColor: "rgba(255, 107, 53, 0.2)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
   input: {
     backgroundColor: "#3E3842",
@@ -275,38 +306,47 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   loginButton: {
-    backgroundColor: "#FF8C42",
-    borderRadius: 100,
-    padding: 16,
+    backgroundColor: "rgba(62, 56, 66, 0.45)",
+    borderRadius: 25,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
     alignItems: "center",
     marginTop: 8,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 107, 53, 0.45)",
+    shadowColor: "rgba(255, 107, 53, 0.3)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 4,
   },
   loginText: {
-    color: "#1C1F1F",
-    fontSize: 16,
+    color: "#FF8C42",
+    fontSize: 17,
     fontWeight: "600",
   },
   signupButton: {
-    borderRadius: 100,
-    padding: 16,
+    backgroundColor: "rgba(43, 41, 48, 0.3)",
+    borderRadius: 25,
+    paddingVertical: 14,
     alignItems: "center",
     marginTop: 12,
     borderWidth: 1,
-    borderColor: "#79747E",
+    borderColor: "rgba(255, 107, 53, 0.25)",
   },
   signupText: {
     color: "#FF8C42",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600",
   },
   forgotButton: {
     alignSelf: "center",
-    marginTop: 20,
+    marginTop: 16,
     paddingVertical: 5,
   },
   forgotText: {
     color: "#FF8C42",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "600",
   },
 });
