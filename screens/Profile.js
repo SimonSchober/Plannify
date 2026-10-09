@@ -6,26 +6,202 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  TouchableOpacity,
+  Pressable,
   Alert,
   ScrollView,
   Modal,
-  Dimensions,
+  Animated,
+  Easing,
 } from "react-native";
 import * as Font from "expo-font";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CommonActions, useNavigation } from "@react-navigation/native";
 
 import QRCode from "react-native-qrcode-svg";
 import { Ionicons } from "@expo/vector-icons";
+import { signOut } from "firebase/auth";
 import { db, auth } from "../firebaseConfig";
 import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { LanguageContext } from "../LanguageContext";
-import { CameraView, requestCameraPermissionsAsync, Camera } from "expo-camera";
+import { CameraView, Camera } from "expo-camera";
 
 let customFonts = {
-  font: require("../Roboto_Condensed/RobotoCondensed-Italic-VariableFont_wght.ttf"),
+  font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
 };
 
-export default class Profile extends Component {
+const SESSION_KEY = "login_timestamp";
+const playedAnimations = new Set();
+
+function PressableScale({
+  children,
+  onPress,
+  style,
+  containerStyle,
+  scaleTo = 0.95,
+  hitSlop,
+}) {
+  const scale = React.useRef(new Animated.Value(1)).current;
+
+  const animateTo = (value) =>
+    Animated.spring(scale, {
+      toValue: value,
+      speed: 40,
+      bounciness: 0,
+      useNativeDriver: true,
+    }).start();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => animateTo(scaleTo)}
+      onPressOut={() => animateTo(1)}
+      style={containerStyle}
+      hitSlop={hitSlop}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+function AnimatedItem({ children, index = 0, style, id }) {
+  const alreadyPlayed = id ? playedAnimations.has(id) : false;
+  const anim = React.useRef(new Animated.Value(alreadyPlayed ? 1 : 0)).current;
+
+  React.useEffect(() => {
+    if (alreadyPlayed) return;
+    if (id) playedAnimations.add(id);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 380,
+      delay: index * 70,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [18, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+function PopCard({ children, style, id }) {
+  const alreadyPlayed = id ? playedAnimations.has(id) : false;
+  const anim = React.useRef(new Animated.Value(alreadyPlayed ? 1 : 0)).current;
+
+  React.useEffect(() => {
+    if (alreadyPlayed) return;
+    if (id) playedAnimations.add(id);
+    Animated.spring(anim, {
+      toValue: 1,
+      speed: 14,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [30, 0],
+              }),
+            },
+            {
+              scale: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.92, 1],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+function PulseFrame() {
+  const pulse = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.scanFramePulse,
+        {
+          opacity: pulse.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.45, 1],
+          }),
+          transform: [
+            {
+              scale: pulse.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, 1.04],
+              }),
+            },
+          ],
+        },
+      ]}
+    />
+  );
+}
+
+function ProfileWrapper(props) {
+  const hookNavigation = useNavigation();
+  return <Profile {...props} navigation={props.navigation || hookNavigation} />;
+}
+
+export default ProfileWrapper;
+
+class Profile extends Component {
   static contextType = LanguageContext;
 
   constructor(props) {
@@ -42,9 +218,11 @@ export default class Profile extends Component {
       myQrVisible: false,
       langModalVisible: false,
       hasCameraPermission: null,
+      cameraActive: false,
       scanned: false,
       profileLoaded: false,
       isOwnProfile: true,
+      isCameraReady: false,
     };
   }
 
@@ -57,7 +235,7 @@ export default class Profile extends Component {
     this.loadFontAsync();
     try {
       const routeParams = this.props.route?.params;
-      const scannedUserId = routeParams?.uid;
+      const scannedUserId = routeParams?.uid || routeParams?.userId;
 
       let targetuid = scannedUserId;
       if (!targetuid) {
@@ -96,54 +274,68 @@ export default class Profile extends Component {
 
   openScanner = async () => {
     try {
-      const existingStatus = await Camera.getCameraPermissionsAsync();
-      if (existingStatus.granted) {
-        this.setState({
-          hasCameraPermission: true,
-          scannerVisible: true,
-          scanned: false,
-          cameraActive: false,
-        });
-        setTimeout(
-          () => {
-            this.setState({ cameraActive: true });
-          },
-          Platform.OS === "android" ? 350 : 0,
+      let existingStatus = (await Camera.getCameraPermissionsAsync());
+
+     
+
+      if (!existingStatus) {
+        this.setState({ hasCameraPermission: false });
+        Alert.alert(
+          "Permission denied",
+          "Camera permission is required to scan QR codes. You can enable it in your phone's settings.",
         );
         return;
       }
-
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      const isGranted = status === "granted";
+if (existingStatus.granted) {
       this.setState({
-        hasCameraPermission: isGranted,
-        scannerVisible: isGranted,
+        hasCameraPermission: true,
+        scannerVisible: true,
         scanned: false,
         cameraActive: false,
+        ifCameraReady: false
       });
-      if (!isGranted) {
-        setTimeout(
-          () => {
-            this.setState({ cameraActive: true });
-          },
-          Platform.OS === "android" ? 350 : 0,
-        );
-      } else {
-        alert(
-          "permission denied",
-          "camera permission required to scan QR codes",
-        );
-      }
-    } catch (error) {
-      console.error("permission request failure", error);
-      Alert.alert("could not request camera hardware");
+      setTimeout(()=>{
+        this.setState({cameraActive: true})
+      }, Platform.OS==="android"?450:0)
+      return
+
     }
+     const {status}=await Camera.requestCameraPermissionsAsync()
+     const isgranted =status==="granted"
+     this.setState({
+      hasCameraPermission: isgranted,
+      scannerVisible: isgranted,
+      scanned: false,
+      cameraActive: false,
+      isCameraReady: false
+     })
+
+     if (isgranted){
+      setTimeout(()=>{
+        this.setState({cameraActive:true})
+      }, Platform.OS==="android"?450:0)
+      
+
+     }
+     else{
+      alert.Alert("Permission denied, Camera Permission is required to scan the QR ")
+     }
+    } 
+    catch (error) {
+      console.error("permission request failure", error);
+      Alert.alert("Could not access the camera");
+    }
+  };
+
+  closeScanner = () => {
+    this.setState({ scannerVisible: false, cameraActive: false });
   };
 
   handleBarCodeScanned = ({ type, data }) => {
     this.setState({
       scanned: true,
       scannerVisible: false,
+      cameraActive: false,
     });
     if (data) {
       this.props.navigation.navigate("Profile", { userId: data });
@@ -176,8 +368,40 @@ export default class Profile extends Component {
     }
   };
 
+  confirmLogout = () => {
+    const { t } = this.context;
+    Alert.alert(
+      t.logout || "Log out",
+      t.logoutConfirm || "Do you really want to log out?",
+      [
+        { text: t.cancel || "Cancel", style: "cancel" },
+        {
+          text: t.logout || "Log out",
+          style: "destructive",
+          onPress: this.logout,
+        },
+      ],
+    );
+  };
+
+  logout = async () => {
+    try {
+      await AsyncStorage.removeItem(SESSION_KEY);
+      await signOut(auth);
+      const { navigation } = this.props;
+      if (navigation) {
+        navigation.dispatch(
+          CommonActions.reset({ index: 0, routes: [{ name: "LogIn" }] }),
+        );
+      }
+    } catch (error) {
+      console.error("Error logging out", error);
+      Alert.alert(error.message);
+    }
+  };
+
   render() {
-    if (!this.state.fontsLoaded) return null;
+   // if (!this.state.fontsLoaded) return null;
     const currentuid = auth.currentUser ? auth.currentUser.uid : "No User";
     const {
       school,
@@ -189,6 +413,7 @@ export default class Profile extends Component {
       myQrVisible,
       langModalVisible,
       scanned,
+      cameraActive
     } = this.state;
     const { t, language, setLanguage } = this.context;
     const titleMarginTop = Platform.OS === "ios" ? 50 : 10;
@@ -206,61 +431,69 @@ export default class Profile extends Component {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={[styles.title, { marginTop: titleMarginTop }]}>
-            {t.profile}
-          </Text>
-          <Text style={styles.subtitle}>{t.profileSubtitle}</Text>
+          <AnimatedItem id="profile-title" index={0}>
+            <Text style={[styles.title, { marginTop: titleMarginTop }]}>
+              {t.profile}
+            </Text>
+          </AnimatedItem>
+          <AnimatedItem id="profile-subtitle" index={1}>
+            <Text style={styles.subtitle}>{t.profileSubtitle}</Text>
+          </AnimatedItem>
 
           {/* Top-Buttons Row */}
           {this.state.isOwnProfile && (
-            <View style={styles.topButtonsContainer}>
-              <TouchableOpacity
+            <AnimatedItem
+              id="profile-buttons"
+              index={2}
+              style={styles.topButtonsContainer}
+            >
+              <PressableScale
                 onPress={() => this.setState({ myQrVisible: true })}
-                style={styles.topButtonWrapper}
+                containerStyle={styles.topButtonWrapper}
+                style={styles.topButton}
+                scaleTo={0.93}
               >
-                <View style={styles.topButton}>
-                  <Ionicons
-                    name="qr-code-outline"
-                    size={18}
-                    color="#FF8C42"
-                    style={styles.buttonIcon}
-                  />
-                  <Text style={styles.topButtonText}>MyQR</Text>
-                </View>
-              </TouchableOpacity>
+                <Ionicons
+                  name="qr-code-outline"
+                  size={18}
+                  color="#FF8C42"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>MyQR</Text>
+              </PressableScale>
 
-              <TouchableOpacity
+              <PressableScale
                 onPress={this.openScanner}
-                style={styles.topButtonWrapper}
+                containerStyle={styles.topButtonWrapper}
+                style={styles.topButton}
+                scaleTo={0.93}
               >
-                <View style={styles.topButton}>
-                  <Ionicons
-                    name="scan-outline"
-                    size={18}
-                    color="#FF8C42"
-                    style={styles.buttonIcon}
-                  />
-                  <Text style={styles.topButtonText}>Scan QR</Text>
-                </View>
-              </TouchableOpacity>
+                <Ionicons
+                  name="scan-outline"
+                  size={18}
+                  color="#FF8C42"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>Scan QR</Text>
+              </PressableScale>
 
-              <TouchableOpacity
+              <PressableScale
                 onPress={() => this.setState({ langModalVisible: true })}
-                style={styles.topButtonWrapper}
+                containerStyle={styles.topButtonWrapper}
+                style={styles.topButton}
+                scaleTo={0.93}
               >
-                <View style={styles.topButton}>
-                  <Ionicons
-                    name="language-outline"
-                    size={18}
-                    color="#FF8C42"
-                    style={styles.buttonIcon}
-                  />
-                  <Text style={styles.topButtonText}>
-                    {t.language || "Language"}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </View>
+                <Ionicons
+                  name="language-outline"
+                  size={18}
+                  color="#FF8C42"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>
+                  {t.language || "Language"}
+                </Text>
+              </PressableScale>
+            </AnimatedItem>
           )}
 
           {/* Modal: My QR */}
@@ -271,29 +504,31 @@ export default class Profile extends Component {
             animationType="fade"
           >
             <View style={styles.modalOverlay}>
-              <View style={styles.qrCard}>
+              <PopCard id="profile-qr-popup" style={styles.qrCard}>
                 <Text style={styles.qrCardTitle}>My QR Code</Text>
-                <View style={styles.qrCodeWrapper}>
-                  <QRCode
-                    value={currentuid}
-                    size={200}
-                    backgroundColor={"#ffffff"}
-                    color={"#000000"}
-                    quietZone={10}
-                  />
-                </View>
+                <AnimatedItem id="profile-qr-code" index={2}>
+                  <View style={styles.qrCodeWrapper}>
+                    <QRCode
+                      value={currentuid}
+                      size={200}
+                      backgroundColor={"#ffffff"}
+                      color={"#000000"}
+                      quietZone={10}
+                    />
+                  </View>
+                </AnimatedItem>
                 <Text style={styles.qrSubtitle}>
                   {username ? `@${username}` : "@loading..."}
                 </Text>
-                <TouchableOpacity
-                  style={{ marginTop: 20, width: "100%" }}
+                <PressableScale
+                  containerStyle={{ marginTop: 20, width: "100%" }}
+                  style={styles.actionButton}
+                  scaleTo={0.97}
                   onPress={() => this.setState({ myQrVisible: false })}
                 >
-                  <View style={styles.actionButton}>
-                    <Text style={styles.actionButtonText}>Close</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
+                  <Text style={styles.actionButtonText}>Close</Text>
+                </PressableScale>
+              </PopCard>
             </View>
           </Modal>
 
@@ -305,17 +540,18 @@ export default class Profile extends Component {
             animationType="fade"
           >
             <View style={styles.modalOverlay}>
-              <View style={styles.qrCard}>
+              <PopCard id="profile-lang-popup" style={styles.qrCard}>
                 <Text style={styles.qrCardTitle}>
                   {t.language || "Select Language"}
                 </Text>
 
                 <View style={styles.modalLangRow}>
-                  <TouchableOpacity
+                  <PressableScale
                     style={[
                       styles.modalLangBtn,
                       language === "de" && styles.modalLangBtnActive,
                     ]}
+                    scaleTo={0.97}
                     onPress={() => setLanguage("de")}
                   >
                     <Text
@@ -326,13 +562,14 @@ export default class Profile extends Component {
                     >
                       Deutsch 🇩🇪
                     </Text>
-                  </TouchableOpacity>
+                  </PressableScale>
 
-                  <TouchableOpacity
+                  <PressableScale
                     style={[
                       styles.modalLangBtn,
                       language === "en" && styles.modalLangBtnActive,
                     ]}
+                    scaleTo={0.97}
                     onPress={() => setLanguage("en")}
                   >
                     <Text
@@ -343,99 +580,127 @@ export default class Profile extends Component {
                     >
                       English 🇬🇧
                     </Text>
-                  </TouchableOpacity>
+                  </PressableScale>
                 </View>
 
-                <TouchableOpacity
-                  style={{ marginTop: 20, width: "100%" }}
+                <PressableScale
+                  containerStyle={{ marginTop: 20, width: "100%" }}
+                  style={styles.actionButton}
+                  scaleTo={0.97}
                   onPress={() => this.setState({ langModalVisible: false })}
                 >
-                  <View style={styles.actionButton}>
-                    <Text style={styles.actionButtonText}>Close</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
+                  <Text style={styles.actionButtonText}>Close</Text>
+                </PressableScale>
+              </PopCard>
             </View>
           </Modal>
 
           {/* Modal: Camera Scanner */}
           <Modal
             visible={scannerVisible}
-            onRequestClose={() => this.setState({ scannerVisible: false })}
+            onRequestClose={this.closeScanner}
             animationType="fade"
           >
             <View style={{ flex: 1 }}>
-              {this.state.cameraActive && (
+              {cameraActive && (
                 <CameraView
                   style={StyleSheet.absoluteFillObject}
+                  facing="back"
+                  onCameraReady={()=>this.setState({isCameraReady: true})}
                   onBarcodeScanned={
                     scanned ? undefined : this.handleBarCodeScanned
                   }
-                  barcodeSettings={{
+                  barcodeScannerSettings={{
                     barcodeTypes: ["qr"],
                   }}
                 />
               )}
               <View style={styles.scannerOverlay}>
                 <View style={styles.scannedTargetWindow}>
-                  <TouchableOpacity
-                    onPress={() => this.setState({ scannerVisible: false })}
+                  <PulseFrame />
+                  <PressableScale
+                    onPress={this.closeScanner}
+                    style={styles.actionButton}
+                    scaleTo={0.97}
                   >
-                    <View style={styles.actionButton}>
-                      <Text style={styles.actionButtonText}>Close</Text>
-                    </View>
-                  </TouchableOpacity>
+                    <Text style={styles.actionButtonText}>Close</Text>
+                  </PressableScale>
                 </View>
               </View>
             </View>
           </Modal>
 
           {/* Profile Card */}
-          <View style={styles.card}>
-            <TextInput
-              style={styles.input}
-              value={username}
-              onChangeText={(username) => this.setState({ username })}
-              placeholder={t.username}
-              placeholderTextColor="#938F99"
-            />
-            <TextInput
-              style={styles.input}
-              value={name}
-              onChangeText={(name) => this.setState({ name })}
-              placeholder={t.name}
-              placeholderTextColor="#938F99"
-            />
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={(email) => this.setState({ email })}
-              placeholder={t.email}
-              placeholderTextColor="#938F99"
-              autoCapitalize="none"
-              keyboardType="email-address"
-            />
-            <TextInput
-              style={styles.input}
-              value={school}
-              onChangeText={(school) => this.setState({ school })}
-              placeholder={t.school}
-              placeholderTextColor="#938F99"
-            />
-            <TextInput
-              style={styles.input}
-              value={number}
-              onChangeText={(number) => this.setState({ number })}
-              placeholder={t.mobile}
-              placeholderTextColor="#938F99"
-              keyboardType="phone-pad"
-            />
-            <TouchableOpacity onPress={this.saveProfile}>
-              <View style={styles.actionButton}>
+          <AnimatedItem id="profile-card" index={3}>
+            <View style={styles.card}>
+              <TextInput
+                style={styles.input}
+                value={username}
+                onChangeText={(username) => this.setState({ username })}
+                placeholder={t.username}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={name}
+                onChangeText={(name) => this.setState({ name })}
+                placeholder={t.name}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={email}
+                onChangeText={(email) => this.setState({ email })}
+                placeholder={t.email}
+                placeholderTextColor="#938F99"
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+              <TextInput
+                style={styles.input}
+                value={school}
+                onChangeText={(school) => this.setState({ school })}
+                placeholder={t.school}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={number}
+                onChangeText={(number) => this.setState({ number })}
+                placeholder={t.mobile}
+                placeholderTextColor="#938F99"
+                keyboardType="phone-pad"
+              />
+              <PressableScale
+                onPress={this.saveProfile}
+                style={styles.actionButton}
+                scaleTo={0.97}
+              >
                 <Text style={styles.actionButtonText}>{t.saveChanges}</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+              </PressableScale>
+            </View>
+          </AnimatedItem>
+
+          {/* Logout */}
+          {this.state.isOwnProfile && (
+            <AnimatedItem id="profile-logout" index={4}>
+              <PressableScale
+                onPress={this.confirmLogout}
+                style={styles.logoutButton}
+                scaleTo={0.97}
+              >
+                <Ionicons
+                  name="log-out-outline"
+                  size={20}
+                  color="#FF5A4F"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.logoutButtonText}>
+                  {t.logout || "Log out"}
+                </Text>
+              </PressableScale>
+            </AnimatedItem>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     );
@@ -484,12 +749,14 @@ const styles = StyleSheet.create({
     color: "#E6E0E9",
     alignSelf: "center",
     marginBottom: 8,
+    fontFamily: "font",
   },
   subtitle: {
     fontSize: 16,
     color: "#CAC4D0",
     alignSelf: "center",
     marginBottom: 20,
+    fontFamily: "font",
   },
   topButtonsContainer: {
     flexDirection: "row",
@@ -503,8 +770,8 @@ const styles = StyleSheet.create({
   topButton: {
     flexDirection: "row",
     backgroundColor: "rgba(62, 56, 66, 0.45)",
-    borderRadius: 25,
-    paddingVertical: 12,
+    borderRadius: 22,
+    paddingVertical: 6,
     paddingHorizontal: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -523,14 +790,15 @@ const styles = StyleSheet.create({
     color: "#FF8C42",
     fontSize: 13,
     fontWeight: "600",
+    fontFamily: "font",
   },
   actionButton: {
     backgroundColor: "rgba(62, 56, 66, 0.45)",
-    borderRadius: 25,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+    borderRadius: 22,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
     alignItems: "center",
-    marginTop: 12,
+    marginTop: 10,
     borderWidth: 1.5,
     borderColor: "rgba(255, 107, 53, 0.45)",
     shadowColor: "rgba(255, 107, 53, 0.3)",
@@ -541,8 +809,27 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     color: "#FF8C42",
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "600",
+    fontFamily: "font",
+  },
+  logoutButton: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255, 90, 79, 0.08)",
+    borderRadius: 22,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 90, 79, 0.5)",
+  },
+  logoutButtonText: {
+    color: "#FF5A4F",
+    fontSize: 15,
+    fontWeight: "600",
+    fontFamily: "font",
   },
   qrWrapper: {
     flex: 1,
@@ -561,7 +848,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "rgba(43, 41, 48, 0.7)",
     borderRadius: 28,
-    padding: 24,
+    padding: 20,
     borderWidth: 1.5,
     borderColor: "rgba(255, 107, 53, 0.35)",
     shadowColor: "rgba(255, 107, 53, 0.2)",
@@ -573,10 +860,12 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: "#3E3842",
     borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    fontSize: 15,
     color: "#E6E0E9",
-    marginBottom: 16,
+    marginBottom: 10,
+    fontFamily: "font",
   },
   modalOverlay: {
     flex: 1,
@@ -592,14 +881,18 @@ const styles = StyleSheet.create({
   scannedTargetWindow: {
     width: 260,
     height: 260,
-    borderWidth: 3,
-    borderColor: "#FF6B35",
     borderRadius: 16,
     backgroundColor: "transparent",
   },
+  scanFramePulse: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 3,
+    borderColor: "#FF6B35",
+    borderRadius: 16,
+  },
   qrCard: {
     backgroundColor: "rgba(43, 41, 48, 0.96)",
-    padding: 24,
+    padding: 20,
     borderRadius: 28,
     alignItems: "center",
     width: "85%",
@@ -621,12 +914,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     marginBottom: 20,
+    fontFamily: "font",
   },
   qrSubtitle: {
     color: "#CAC4D0",
     fontSize: 16,
     marginTop: 12,
     fontWeight: "500",
+    fontFamily: "font",
   },
   modalLangRow: {
     width: "100%",
@@ -635,7 +930,7 @@ const styles = StyleSheet.create({
   },
   modalLangBtn: {
     width: "100%",
-    paddingVertical: 14,
+    paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1.5,
     borderColor: "#938F99",
@@ -649,7 +944,8 @@ const styles = StyleSheet.create({
   modalLangText: {
     color: "#CAC4D0",
     fontWeight: "700",
-    fontSize: 16,
+    fontSize: 15,
+    fontFamily: "font",
   },
   modalLangTextActive: {
     color: "#FFF",
