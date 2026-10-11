@@ -24,6 +24,7 @@ import { db, auth } from "../firebaseConfig";
 import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { LanguageContext } from "../LanguageContext";
 import { CameraView, Camera } from "expo-camera";
+import { buildOverviewLink, extractUid, openOverview } from "./QROverviewModal";
 
 let customFonts = {
   font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
@@ -224,6 +225,8 @@ class Profile extends Component {
       isOwnProfile: true,
       isCameraReady: false,
     };
+
+    this.cameraTimer = null;
   }
 
   async loadFontAsync() {
@@ -272,13 +275,19 @@ class Profile extends Component {
     }
   }
 
+  componentWillUnmount() {
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
+  }
+
   openScanner = async () => {
     try {
-      let existingStatus = (await Camera.getCameraPermissionsAsync());
+      let permission = await Camera.getCameraPermissionsAsync();
 
-     
+      if (!permission.granted) {
+        permission = await Camera.requestCameraPermissionsAsync();
+      }
 
-      if (!existingStatus) {
+      if (!permission.granted) {
         this.setState({ hasCameraPermission: false });
         Alert.alert(
           "Permission denied",
@@ -286,62 +295,53 @@ class Profile extends Component {
         );
         return;
       }
-if (existingStatus.granted) {
+
       this.setState({
         hasCameraPermission: true,
         scannerVisible: true,
         scanned: false,
         cameraActive: false,
-        ifCameraReady: false
+        isCameraReady: false,
       });
-      setTimeout(()=>{
-        this.setState({cameraActive: true})
-      }, Platform.OS==="android"?450:0)
-      return
 
-    }
-     const {status}=await Camera.requestCameraPermissionsAsync()
-     const isgranted =status==="granted"
-     this.setState({
-      hasCameraPermission: isgranted,
-      scannerVisible: isgranted,
-      scanned: false,
-      cameraActive: false,
-      isCameraReady: false
-     })
-
-     if (isgranted){
-      setTimeout(()=>{
-        this.setState({cameraActive:true})
-      }, Platform.OS==="android"?450:0)
-      
-
-     }
-     else{
-      alert.Alert("Permission denied, Camera Permission is required to scan the QR ")
-     }
-    } 
-    catch (error) {
+      if (this.cameraTimer) clearTimeout(this.cameraTimer);
+      this.cameraTimer = setTimeout(
+        () => this.setState({ cameraActive: true }),
+        Platform.OS === "android" ? 450 : 0,
+      );
+    } catch (error) {
       console.error("permission request failure", error);
       Alert.alert("Could not access the camera");
     }
   };
 
   closeScanner = () => {
-    this.setState({ scannerVisible: false, cameraActive: false });
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
+    this.setState({
+      scannerVisible: false,
+      cameraActive: false,
+      isCameraReady: false,
+    });
   };
 
-  handleBarCodeScanned = ({ type, data }) => {
+  handleBarCodeScanned = ({ data }) => {
+    const { t } = this.context;
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
     this.setState({
       scanned: true,
       scannerVisible: false,
       cameraActive: false,
+      isCameraReady: false,
     });
-    if (data) {
-      this.props.navigation.navigate("Profile", { userId: data });
-    } else {
-      Alert.alert("QR Scanned", `data:${data}`);
-    }
+
+    const uid = extractUid(data);
+    setTimeout(() => {
+      if (uid) {
+        openOverview(uid);
+      } else {
+        Alert.alert(t.invalidQr || "Invalid QR code");
+      }
+    }, 450);
   };
 
   saveProfile = async () => {
@@ -401,7 +401,7 @@ if (existingStatus.granted) {
   };
 
   render() {
-   // if (!this.state.fontsLoaded) return null;
+    // if (!this.state.fontsLoaded) return null;
     const currentuid = auth.currentUser ? auth.currentUser.uid : "No User";
     const {
       school,
@@ -413,7 +413,7 @@ if (existingStatus.granted) {
       myQrVisible,
       langModalVisible,
       scanned,
-      cameraActive
+      cameraActive,
     } = this.state;
     const { t, language, setLanguage } = this.context;
     const titleMarginTop = Platform.OS === "ios" ? 50 : 10;
@@ -509,7 +509,7 @@ if (existingStatus.granted) {
                 <AnimatedItem id="profile-qr-code" index={2}>
                   <View style={styles.qrCodeWrapper}>
                     <QRCode
-                      value={currentuid}
+                      value={buildOverviewLink(currentuid)}
                       size={200}
                       backgroundColor={"#ffffff"}
                       color={"#000000"}
@@ -606,7 +606,7 @@ if (existingStatus.granted) {
                 <CameraView
                   style={StyleSheet.absoluteFillObject}
                   facing="back"
-                  onCameraReady={()=>this.setState({isCameraReady: true})}
+                  onCameraReady={() => this.setState({ isCameraReady: true })}
                   onBarcodeScanned={
                     scanned ? undefined : this.handleBarCodeScanned
                   }
