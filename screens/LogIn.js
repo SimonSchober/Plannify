@@ -24,6 +24,8 @@ import {
 } from "firebase/auth";
 import { auth } from "../firebaseConfig";
 import { LanguageContext } from "../LanguageContext";
+import {Ionicons} from "@expo/vector-icons"
+import {isBiometricAvailable, hasSavedCredentials, saveCredentials, clearCredentials, getCredentialsWithBiometric} from "./screens/BiometricLogin.js"
 
 let customFonts = {
   font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
@@ -31,6 +33,7 @@ let customFonts = {
 
 const SESSION_KEY = "login_timestamp";
 const SESSION_DURATION = 10 * 60 * 1000;
+const AUTO_PROMPT_BIOMETRICS = true
 const playedAnimations = new Set();
 
 function PressableScale({
@@ -116,7 +119,10 @@ export default class LogIn extends Component {
       email: "",
       fontsLoaded: false,
       loading: false,
+      biometricAvailable: false,
+      hasSavedLogin: false
     };
+    this.biometricPrompting = false
 
     this.shakeAnim = new Animated.Value(0);
     this._mounted = false;
