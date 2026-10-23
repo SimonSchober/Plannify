@@ -24,8 +24,14 @@ import {
 } from "firebase/auth";
 import { auth } from "../firebaseConfig";
 import { LanguageContext } from "../LanguageContext";
-import {Ionicons} from "@expo/vector-icons"
-import {isBiometricAvailable, hasSavedCredentials, saveCredentials, clearCredentials, getCredentialsWithBiometric} from "./screens/BiometricLogin.js"
+import { Ionicons } from "@expo/vector-icons";
+import {
+  isBiometricAvailable,
+  hasSavedCredentials,
+  saveCredentials,
+  clearCredentials,
+  getCredentialsWithBiometric,
+} from "./BiometricLogin";
 
 let customFonts = {
   font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
@@ -33,7 +39,6 @@ let customFonts = {
 
 const SESSION_KEY = "login_timestamp";
 const SESSION_DURATION = 10 * 60 * 1000;
-const AUTO_PROMPT_BIOMETRICS = true
 const playedAnimations = new Set();
 
 function PressableScale({
@@ -120,9 +125,9 @@ export default class LogIn extends Component {
       fontsLoaded: false,
       loading: false,
       biometricAvailable: false,
-      hasSavedLogin: false
+      hasSavedLogin: false,
     };
-    this.biometricPrompting = false
+    this.biometricPrompting = false;
 
     this.shakeAnim = new Animated.Value(0);
     this._mounted = false;
@@ -237,8 +242,8 @@ export default class LogIn extends Component {
     if (nextState === "active") this.checkExpiry();
   };
 
-  signIn = async (email, password) => {
-    if (this.state.loading) return;
+  signIn = async (email, password, fromBiometrics = false) => {
+    if (this.state.loading && !fromBiometrics) return;
     const { t } = this.context;
     const cleanEmail = (email || "").trim();
 
@@ -252,21 +257,39 @@ export default class LogIn extends Component {
         );
         if (response) {
           await this.startSession();
+          if (!fromBiometrics) {
+            await this.syncBiometricLogin(cleanEmail, password);
+          }
           this.props.navigation.navigate("TabNavigator");
         }
       } catch (error) {
         this.shake();
-        switch (error.code) {
-          case "auth/user-not-found":
-            Alert.alert(t.userNotFound);
-            break;
-          case "auth/invalid-email":
-          case "auth/wrong-password":
-          case "auth/invalid-credential":
-            Alert.alert(t.incorrectLogin);
-            break;
-          default:
-            Alert.alert(error.message);
+        const badCredentials = [
+          "auth/user-not-found",
+          "auth/wrong-password",
+          "auth/invalid-credential",
+        ].includes(error.code);
+
+        if (fromBiometrics && badCredentials) {
+          await clearCredentials().catch(() => {});
+          if (this._mounted) this.setState({ hasSavedLogin: false });
+          Alert.alert(
+            t.biometricLoginFailed || "Fingerprint sign-in failed.",
+            t.incorrectLogin,
+          );
+        } else {
+          switch (error.code) {
+            case "auth/user-not-found":
+              Alert.alert(t.userNotFound);
+              break;
+            case "auth/invalid-email":
+            case "auth/wrong-password":
+            case "auth/invalid-credential":
+              Alert.alert(t.incorrectLogin);
+              break;
+            default:
+              Alert.alert(error.message);
+          }
         }
       } finally {
         if (this._mounted) this.setState({ loading: false });
@@ -276,7 +299,129 @@ export default class LogIn extends Component {
       Alert.alert(t.enterBoth);
     }
   };
+  initBiometric = async () => {
+    try {
+      const [available, saved] = await Promise.all([
+        isBiometricAvailable(),
+        hasSavedCredentials(),
+      ]);
+      if (!this._mounted) return;
+      this.setState({ biometricAvailable: available, hasSavedLogin: saved });
+    } catch (error) {
+      console.log("biometric init failed", error);
+    }
+  };
 
+  askToEnableBiometrics = (email, password) => {
+    const { t } = this.context;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const finish = (result) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(result);
+      };
+
+      Alert.alert(
+        t.biometricSetupTitle || "Enable fingerprint login?",
+        t.biometricSetupMessage || "Save your login securely on this device for fingerprint sign-in next time?",
+        [
+          {
+            text: t.biometricNotNow || "Not now",
+            style: "cancel",
+            onPress: () => finish(false),
+          },
+          {
+            text: t.biometricEnable || "Enable",
+            onPress: async () => {
+              try {
+                await saveCredentials(
+                  email,
+                  password,
+                  t.biometricSavePrompt || "Authenticate to enable fingerprint login",
+                );
+                if (this._mounted) this.setState({ hasSavedLogin: true });
+                finish(true);
+              } catch (error) {
+                Alert.alert(
+                  t.biometricSetupFailed || "Fingerprint login could not be enabled.",
+                );
+                finish(false);
+              }
+            },
+          },
+        ],
+        { cancelable: true, onDismiss: () => finish(false) },
+      );
+    });
+  };
+
+  syncBiometricLogin = async (email, password) => {
+    try {
+      if (this.state.hasSavedLogin) {
+        await saveCredentials(
+          email,
+          password,
+          this.context.t.biometricSavePrompt || "Authenticate to update your saved login",
+        );
+      } else if (this.state.biometricAvailable) {
+        await this.askToEnableBiometrics(email, password);
+      }
+    } catch (error) {
+      console.log("biometric sync failed", error);
+    }
+  };
+
+  handleBiometricLogin = async () => {
+    const { t, language } = this.context;
+    const enteredEmail = (this.state.email || "").trim().toLowerCase();
+
+    if (!enteredEmail) {
+      Alert.alert(
+        t.enterEmail || "Email required",
+        language === "de"
+          ? "Gib zuerst die E-Mail-Adresse des gespeicherten Kontos ein."
+          : "Enter the email address for the saved account first.",
+      );
+      return;
+    }
+
+    if (!this.state.hasSavedLogin) {
+      Alert.alert(
+        t.biometricFirstLogin || "Sign in with your email and password first, then enable fingerprint login.",
+      );
+      return;
+    }
+    if (this.state.loading || this.biometricPrompting) return;
+
+    this.biometricPrompting = true;
+    try {
+      const credentials = await getCredentialsWithBiometric(
+        t.biometricLoginPrompt || "Authenticate to sign in to Plannify",
+      );
+      if (credentials) {
+        if (credentials.email.trim().toLowerCase() !== enteredEmail) {
+          Alert.alert(
+            t.incorrectLogin || "Incorrect email or password",
+            language === "de"
+              ? "Die eingegebene E-Mail stimmt nicht mit dem gespeicherten Konto überein."
+              : "That email does not match the account saved for fingerprint login.",
+          );
+          return;
+        }
+        await this.signIn(credentials.email, credentials.password, true);
+      }
+    } catch (error) {
+      if (error?.code !== "ERR_CANCELED" && error?.code !== "ERR_AUTHENTICATION_CANCELED") {
+        Alert.alert(
+          t.biometricLoginFailed || "Fingerprint sign-in failed. Try your password.",
+        );
+      }
+    } finally {
+      this.biometricPrompting = false;
+    }
+  };
   handleForgotPassword = async () => {
     const { t } = this.context;
     const email = (this.state.email || "").trim();
@@ -313,6 +458,7 @@ export default class LogIn extends Component {
     this._mounted = true;
     this.loadFontAsync();
     this.restoreSession();
+    this.initBiometric();
     this.appStateSub = AppState.addEventListener(
       "change",
       this.handleAppStateChange,
@@ -427,6 +573,19 @@ export default class LogIn extends Component {
                   <Text style={styles.loginText}>{t.login}</Text>
                 )}
               </PressableScale>
+              {this.state.biometricAvailable && (
+                <PressableScale
+                  onPress={this.handleBiometricLogin}
+                  style={styles.biometricButton}
+                  scaleTo={0.97}
+                  disabled={this.state.loading}
+                >
+                  <Ionicons name="finger-print" size={21} color="#FF8C42" />
+                  <Text style={styles.biometricText}>
+                    {t.biometricLogin || "Use fingerprint"}
+                  </Text>
+                </PressableScale>
+              )}
               <PressableScale
                 style={styles.signupButton}
                 scaleTo={0.97}
@@ -578,7 +737,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
   },
-  signupButton: {
+  biometricButton: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 9,
+    marginTop: 8,
+  },
+  biometricText: {
+    fontFamily: "font",
+    color: "#FF8C42",
+    fontSize: 14,
+    fontWeight: "600",
+  },  signupButton: {
     backgroundColor: "rgba(43, 41, 48, 0.3)",
     borderRadius: 22,
     paddingVertical: 7,
