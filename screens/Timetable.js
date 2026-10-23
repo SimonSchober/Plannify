@@ -36,6 +36,8 @@ const DAYS = [
   "Sunday",
 ];
 
+const getTodayDayIndex = () => (new Date().getDay() + 6) % DAYS.length;
+
 const playedAnimations = new Set();
 
 const formatTime = (date) => {
@@ -195,13 +197,14 @@ export default class Timetable extends Component {
 
   constructor(props) {
     super(props);
+    const todayDayIndex = getTodayDayIndex();
     this.state = {
       visible: false,
       subjectInput: "",
       teacher: "",
       description: "",
-      selectedDay: "Monday",
-      currentDayIndex: 0,
+      selectedDay: DAYS[todayDayIndex],
+      currentDayIndex: todayDayIndex,
       direction: 0,
       items: DAYS.map((d) => ({ label: d, value: d })),
       open: false,
@@ -416,7 +419,8 @@ export default class Timetable extends Component {
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
         const data = docSnap.data();
-        this.setState({ subject: data.subjects || [] });
+        const subjects = data.subjects || [];
+        this.setState({ subject: subjects });
       } else {
         this.setState({ subject: [] });
       }
