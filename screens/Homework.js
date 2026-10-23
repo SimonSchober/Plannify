@@ -389,15 +389,7 @@ class Homework extends Component {
   };
 
   updateHomeworkStatus = async (id, newStatus) => {
-    const { t } = this.context;
     try {
-      if (newStatus === "done") {
-        Alert.alert(t.homeworkCompleted, t.removeHomework, [
-          { text: t.cancel, style: "cancel" },
-          { text: t.delete, onPress: () => this.deleteHomework(id) },
-        ]);
-        return;
-      }
       const uid = auth.currentUser ? auth.currentUser.uid : null;
       if (!uid) return;
       const docRef = doc(db, "Homework", uid);
@@ -835,6 +827,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: Platform.OS === "ios" ? 6 : 0,
     marginTop: 10,
+    marginBottom: 10,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "rgba(255,107,53,0.15)",
