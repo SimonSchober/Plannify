@@ -19,7 +19,7 @@ import { CommonActions, useNavigation } from "@react-navigation/native";
 
 import QRCode from "react-native-qrcode-svg";
 import { Ionicons } from "@expo/vector-icons";
-import { signOut } from "firebase/auth";
+import { sendPasswordResetEmail, signOut } from "firebase/auth";
 import { db, auth } from "../firebaseConfig";
 import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { LanguageContext } from "../LanguageContext";
@@ -304,11 +304,7 @@ class Profile extends Component {
         isCameraReady: false,
       });
 
-      if (this.cameraTimer) clearTimeout(this.cameraTimer);
-      this.cameraTimer = setTimeout(
-        () => this.setState({ cameraActive: true }),
-        Platform.OS === "android" ? 450 : 0,
-      );
+    
     } catch (error) {
       console.error("permission request failure", error);
       Alert.alert("Could not access the camera");
@@ -365,6 +361,39 @@ class Profile extends Component {
       this.props.changeTab("Dashboard");
     } catch (error) {
       console.error("Error saving profile", error);
+    }
+  };
+
+  confirmPasswordReset = () => {
+    const { t } = this.context;
+    const email = (auth.currentUser?.email || "").trim();
+
+    if (!email) {
+      Alert.alert(t.error || "Error", t.resetPasswordNoEmail || "No email address is linked to this account.");
+      return;
+    }
+
+    Alert.alert(
+      t.resetPasswordConfirmTitle || "Reset password?",
+      `${t.resetPasswordConfirmMessage || "Send a password reset link to"} ${email}?`,
+      [
+        { text: t.cancel || "Cancel", style: "cancel" },
+        {
+          text: t.sendResetEmail || "Send email",
+          onPress: () => this.sendPasswordReset(email),
+        },
+      ],
+    );
+  };
+
+  sendPasswordReset = async (email) => {
+    const { t } = this.context;
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert(t.emailSent || "Email sent", t.emailSentMsg || "A password reset link has been sent to your email address.");
+    } catch (error) {
+      console.error("Error sending password reset email", error);
+      Alert.alert(t.error || "Error", error.message || "Could not send the password reset email.");
     }
   };
 
@@ -460,21 +489,6 @@ class Profile extends Component {
                   style={styles.buttonIcon}
                 />
                 <Text style={styles.topButtonText}>MyQR</Text>
-              </PressableScale>
-
-              <PressableScale
-                onPress={this.openScanner}
-                containerStyle={styles.topButtonWrapper}
-                style={styles.topButton}
-                scaleTo={0.93}
-              >
-                <Ionicons
-                  name="scan-outline"
-                  size={18}
-                  color="#FF8C42"
-                  style={styles.buttonIcon}
-                />
-                <Text style={styles.topButtonText}>Scan QR</Text>
               </PressableScale>
 
               <PressableScale
@@ -599,14 +613,18 @@ class Profile extends Component {
           <Modal
             visible={scannerVisible}
             onRequestClose={this.closeScanner}
-            animationType="fade"
+            animationType="none"
+            presentationStyle="fullscreen"
+            statusBarTranslucent
+            onShow={()=>this.setState({cameraActive: true})}
           >
-            <View style={{ flex: 1 }}>
+            <View style={{ flex: 1, backgroundColor: "#000" }}>
               {cameraActive && (
                 <CameraView
-                  style={StyleSheet.absoluteFillObject}
+                  style={{ flex: 1 }}
                   facing="back"
                   onCameraReady={() => this.setState({ isCameraReady: true })}
+                  OnMountError={(e) => console.log("camera mount error", e)}
                   onBarcodeScanned={
                     scanned ? undefined : this.handleBarCodeScanned
                   }
@@ -615,7 +633,7 @@ class Profile extends Component {
                   }}
                 />
               )}
-              <View style={styles.scannerOverlay}>
+              <View pointerEvents="box-none" style={styles.scannerOverlay}>
                 <View style={styles.scannedTargetWindow}>
                   <PulseFrame />
                   <PressableScale
@@ -678,6 +696,16 @@ class Profile extends Component {
               >
                 <Text style={styles.actionButtonText}>{t.saveChanges}</Text>
               </PressableScale>
+              {this.state.isOwnProfile && (
+                <PressableScale
+                  onPress={this.confirmPasswordReset}
+                  style={[styles.actionButton, styles.passwordResetButton]}
+                  scaleTo={0.97}
+                >
+                  <Ionicons name="mail-outline" size={18} color="#FF8C42" />
+                  <Text style={styles.actionButtonText}>{t.resetPassword}</Text>
+                </PressableScale>
+              )}
             </View>
           </AnimatedItem>
 
@@ -813,6 +841,11 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontFamily: "font",
   },
+  passwordResetButton: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+  },
   logoutButton: {
     flexDirection: "row",
     backgroundColor: "rgba(255, 90, 79, 0.08)",
@@ -841,7 +874,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "rgba(0, 0, 0, 0.4)",
     justifyContent: "center",
     alignItems: "center",
   },
