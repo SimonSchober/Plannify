@@ -1,394 +1,985 @@
-import React, { useCallback, useContext, useEffect, useState } from "react";
+import React, { Component } from "react";
 import {
-  Modal,
-  View,
-  Text,
-  ScrollView,
-  Pressable,
-  ActivityIndicator,
   StyleSheet,
-  DeviceEventEmitter,
-  Dimensions,
+  Text,
+  View,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  Alert,
+  ScrollView,
+  Modal,
+  Animated,
+  Easing,
 } from "react-native";
 import * as Font from "expo-font";
-import * as Linking from "expo-linking";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CommonActions, useNavigation } from "@react-navigation/native";
+
+import QRCode from "react-native-qrcode-svg";
 import { Ionicons } from "@expo/vector-icons";
-import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../firebaseConfig";
+import { sendPasswordResetEmail, signOut } from "firebase/auth";
+import { db, auth } from "../firebaseConfig";
+import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { LanguageContext } from "../LanguageContext";
+import { CameraView, Camera } from "expo-camera";
+import { buildOverviewLink, extractUid, openOverview } from "./QROverviewModal";
 
-const OPEN_EVENT = "plannify.openOverview";
-
-const DAYS = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
-];
-
-export const buildOverviewLink = (uid) =>
-  Linking.createURL("overview", { queryParams: { uid } });
-
-export const extractUid = (data) => {
-  if (!data) return null;
-  const text = String(data).trim();
-
-  if (!text.includes("://")) {
-    return /^[A-Za-z0-9]{20,40}$/.test(text) ? text : null;
-  }
-
-  try {
-    const { queryParams } = Linking.parse(text);
-    const uid = queryParams?.uid;
-    return typeof uid === "string" && /^[A-Za-z0-9]{20,40}$/.test(uid)
-      ? uid
-      : null;
-  } catch (error) {
-    return null;
-  }
+let customFonts = {
+  font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
 };
 
-export const openOverview = (uid) => {
-  DeviceEventEmitter.emit(OPEN_EVENT, uid);
-};
+const SESSION_KEY = "login_timestamp";
+const playedAnimations = new Set();
 
-export default function QROverviewModal() {
-  const { t = {}, language = "en" } = useContext(LanguageContext) || {};
-  const [fontsLoaded] = Font.useFonts({
-    font: require("./Google_Sans/static/GoogleSans_17pt-Bold.ttf"),
-  });
+function PressableScale({
+  children,
+  onPress,
+  style,
+  containerStyle,
+  scaleTo = 0.95,
+  hitSlop,
+}) {
+  const scale = React.useRef(new Animated.Value(1)).current;
 
-  const [authUser, setAuthUser] = useState(null);
-  const [requestedUid, setRequestedUid] = useState(null);
-  const [visible, setVisible] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [data, setData] = useState(null);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => setAuthUser(user));
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-
-    Linking.getInitialURL().then((url) => {
-      const uid = extractUid(url);
-      if (mounted && uid) setRequestedUid(uid);
-    });
-
-    const linkSub = Linking.addEventListener("url", ({ url }) => {
-      const uid = extractUid(url);
-      if (uid) setRequestedUid(uid);
-    });
-
-    const eventSub = DeviceEventEmitter.addListener(OPEN_EVENT, (value) => {
-      const uid = extractUid(value);
-      if (uid) setRequestedUid(uid);
-    });
-
-    return () => {
-      mounted = false;
-      linkSub.remove();
-      eventSub.remove();
-    };
-  }, []);
-
-  const load = useCallback(
-    async (uid) => {
-      setVisible(true);
-      setLoading(true);
-      setError(null);
-      setData(null);
-
-      try {
-        const [userSnap, timetableSnap] = await Promise.all([
-          getDoc(doc(db, "Users", uid)),
-          getDoc(doc(db, "Timetable", uid)),
-        ]);
-
-        if (!userSnap.exists()) {
-          setError(t.profileNotFound || "Profile not found.");
-          return;
-        }
-
-        const user = userSnap.data();
-        setData({
-          profile: {
-            name: user.name || "",
-            username: user.username || "",
-            school: user.school || "",
-          },
-          subjects: timetableSnap.exists()
-            ? timetableSnap.data().subjects || []
-            : [],
-        });
-      } catch (err) {
-        console.error("Could not load overview", err);
-        setError(
-          err?.code === "permission-denied"
-            ? t.noPermission || "You don't have permission to view this profile."
-            : err?.message || "Something went wrong.",
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [t],
-  );
-
-  useEffect(() => {
-    if (requestedUid && authUser) load(requestedUid);
-  }, [requestedUid, authUser]);
-
-  const close = () => {
-    setVisible(false);
-    setRequestedUid(null);
-    setData(null);
-    setError(null);
-  };
-
-  if (!fontsLoaded) return null;
-
-  const todayIndex = (new Date().getDay() + 6) % 7;
-  const today = DAYS[todayIndex];
-  const todayLabel = new Intl.DateTimeFormat(language === "de" ? "de-DE" : "en-US", {
-    weekday: "long",
-  }).format(new Date());
-  const todaysSubjects = data
-    ? data.subjects
-        .filter((subject) => subject.day === today)
-        .sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)))
-    : [];
+  const animateTo = (value) =>
+    Animated.spring(scale, {
+      toValue: value,
+      speed: 40,
+      bounciness: 0,
+      useNativeDriver: true,
+    }).start();
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={close}
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => animateTo(scaleTo)}
+      onPressOut={() => animateTo(1)}
+      style={containerStyle}
+      hitSlop={hitSlop}
     >
-      <View style={styles.overlay}>
-        <View style={styles.card}>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>
-              {t.overviewTitle || "Overview"}
-            </Text>
-            <Pressable onPress={close} hitSlop={12}>
-              <Ionicons name="close" size={26} color="#FF6B35" />
-            </Pressable>
-          </View>
-
-          {loading && (
-            <ActivityIndicator
-              color="#FF8C42"
-              size="large"
-              style={styles.loader}
-            />
-          )}
-
-          {!loading && error && <Text style={styles.errorText}>{error}</Text>}
-
-          {!loading && data && (
-            <ScrollView
-              style={styles.scroll}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.profileBox}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>
-                    {(data.profile.name || data.profile.username || "?")
-                      .charAt(0)
-                      .toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.profileName}>{data.profile.name}</Text>
-                  {!!data.profile.username && (
-                    <Text style={styles.profileMeta}>
-                      @{data.profile.username}
-                    </Text>
-                  )}
-                  {!!data.profile.school && (
-                    <Text style={styles.profileMeta}>{data.profile.school}</Text>
-                  )}
-                </View>
-              </View>
-
-              <Text style={styles.sectionTitle}>
-                {t.todaysClasses || t.timetable || "Today's classes"}
-              </Text>
-              <View style={styles.dayBadge}>
-                <Text style={styles.dayBadgeText}>{todayLabel}</Text>
-              </View>
-              {todaysSubjects.length === 0 ? (
-                <Text style={styles.emptyText}>
-                  {t.noClasses || "No classes scheduled for today."}
-                </Text>
-              ) : (
-                todaysSubjects.map((item, index) => (
-                  <View key={item.id || `${item.subject}-${index}`} style={styles.row}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowTitle}>{item.subject}</Text>
-                      {!!item.teacher && (
-                        <Text style={styles.rowMeta}>{item.teacher}</Text>
-                      )}
-                    </View>
-                    <View style={styles.timeTag}>
-                      <Text style={styles.timeText}>
-                        {item.startTime} - {item.endTime}
-                      </Text>
-                    </View>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          )}
-        </View>
-      </View>
-    </Modal>
+      <Animated.View style={[style, { transform: [{ scale }] }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
   );
 }
 
+function AnimatedItem({ children, index = 0, style, id }) {
+  const alreadyPlayed = id ? playedAnimations.has(id) : false;
+  const anim = React.useRef(new Animated.Value(alreadyPlayed ? 1 : 0)).current;
+
+  React.useEffect(() => {
+    if (alreadyPlayed) return;
+    if (id) playedAnimations.add(id);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 380,
+      delay: index * 70,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [18, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+function PopCard({ children, style, id }) {
+  const alreadyPlayed = id ? playedAnimations.has(id) : false;
+  const anim = React.useRef(new Animated.Value(alreadyPlayed ? 1 : 0)).current;
+
+  React.useEffect(() => {
+    if (alreadyPlayed) return;
+    if (id) playedAnimations.add(id);
+    Animated.spring(anim, {
+      toValue: 1,
+      speed: 14,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [30, 0],
+              }),
+            },
+            {
+              scale: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.92, 1],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+function PulseFrame() {
+  const pulse = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.scanFramePulse,
+        {
+          opacity: pulse.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.45, 1],
+          }),
+          transform: [
+            {
+              scale: pulse.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, 1.04],
+              }),
+            },
+          ],
+        },
+      ]}
+    />
+  );
+}
+
+function ProfileWrapper(props) {
+  const hookNavigation = useNavigation();
+  return <Profile {...props} navigation={props.navigation || hookNavigation} />;
+}
+
+export default ProfileWrapper;
+
+class Profile extends Component {
+  static contextType = LanguageContext;
+
+  constructor(props) {
+    super(props);
+
+    this.state = {
+      school: "",
+      number: "",
+      username: "",
+      name: "",
+      email: "",
+      fontsLoaded: false,
+      scannerVisible: false,
+      myQrVisible: false,
+      langModalVisible: false,
+      hasCameraPermission: null,
+      cameraActive: false,
+      scanned: false,
+      profileLoaded: false,
+      isOwnProfile: true,
+      isCameraReady: false,
+    };
+
+    this.cameraTimer = null;
+  }
+
+  async loadFontAsync() {
+    await Font.loadAsync(customFonts);
+    this.setState({ fontsLoaded: true });
+  }
+
+  async componentDidMount() {
+    this.loadFontAsync();
+    try {
+      const routeParams = this.props.route?.params;
+      const scannedUserId = routeParams?.uid || routeParams?.userId;
+
+      let targetuid = scannedUserId;
+      if (!targetuid) {
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+          console.log("No authenticated active session");
+          this.setState({ profileLoaded: true });
+          return;
+        }
+        targetuid = currentUser.uid;
+      }
+
+      const docRef = doc(db, "Users", targetuid);
+
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        this.setState({
+          username: data.username || "",
+          name: data.name || "",
+          email: data.email || "",
+          school: data.school || "",
+          number: data.number || "",
+          profileLoaded: true,
+          isOwnProfile: !scannedUserId,
+        });
+      } else {
+        console.log("No records found for the target");
+        this.setState({ profileLoaded: true });
+      }
+    } catch (error) {
+      console.error("Error fetching user profile", error);
+      this.setState({ profileLoaded: true });
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
+  }
+
+  openScanner = async () => {
+    try {
+      let permission = await Camera.getCameraPermissionsAsync();
+
+      if (!permission.granted) {
+        permission = await Camera.requestCameraPermissionsAsync();
+      }
+
+      if (!permission.granted) {
+        this.setState({ hasCameraPermission: false });
+        Alert.alert(
+          "Permission denied",
+          "Camera permission is required to scan QR codes. You can enable it in your phone's settings.",
+        );
+        return;
+      }
+
+      this.setState({
+        hasCameraPermission: true,
+        scannerVisible: true,
+        scanned: false,
+        cameraActive: false,
+        isCameraReady: false,
+      });
+
+    
+    } catch (error) {
+      console.error("permission request failure", error);
+      Alert.alert("Could not access the camera");
+    }
+  };
+
+  closeScanner = () => {
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
+    this.setState({
+      scannerVisible: false,
+      cameraActive: false,
+      isCameraReady: false,
+    });
+  };
+
+  handleBarCodeScanned = ({ data }) => {
+    const { t } = this.context;
+    if (this.cameraTimer) clearTimeout(this.cameraTimer);
+    this.setState({
+      scanned: true,
+      scannerVisible: false,
+      cameraActive: false,
+      isCameraReady: false,
+    });
+
+    const uid = extractUid(data);
+    setTimeout(() => {
+      if (uid) {
+        openOverview(uid);
+      } else {
+        Alert.alert(t.invalidQr || "Invalid QR code");
+      }
+    }, 450);
+  };
+
+  saveProfile = async () => {
+    const { t } = this.context;
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        console.log("No user logged in");
+        return;
+      }
+      const uid = currentUser.uid;
+      const docRef = doc(db, "Users", uid);
+      await updateDoc(docRef, {
+        username: this.state.username,
+        name: this.state.name,
+        school: this.state.school,
+        email: this.state.email,
+        number: this.state.number,
+      });
+      Alert.alert(t.profileUpdated);
+      this.props.changeTab("Dashboard");
+    } catch (error) {
+      console.error("Error saving profile", error);
+    }
+  };
+
+  confirmPasswordReset = () => {
+    const { t } = this.context;
+    const email = (auth.currentUser?.email || "").trim();
+
+    if (!email) {
+      Alert.alert(t.error || "Error", t.resetPasswordNoEmail || "No email address is linked to this account.");
+      return;
+    }
+
+    Alert.alert(
+      t.resetPasswordConfirmTitle || "Reset password?",
+      `${t.resetPasswordConfirmMessage || "Send a password reset link to"} ${email}?`,
+      [
+        { text: t.cancel || "Cancel", style: "cancel" },
+        {
+          text: t.sendResetEmail || "Send email",
+          onPress: () => this.sendPasswordReset(email),
+        },
+      ],
+    );
+  };
+
+  sendPasswordReset = async (email) => {
+    const { t } = this.context;
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert(t.emailSent || "Email sent", t.emailSentMsg || "A password reset link has been sent to your email address.");
+    } catch (error) {
+      console.error("Error sending password reset email", error);
+      Alert.alert(t.error || "Error", error.message || "Could not send the password reset email.");
+    }
+  };
+
+  confirmLogout = () => {
+    const { t } = this.context;
+    Alert.alert(
+      t.logout || "Log out",
+      t.logoutConfirm || "Do you really want to log out?",
+      [
+        { text: t.cancel || "Cancel", style: "cancel" },
+        {
+          text: t.logout || "Log out",
+          style: "destructive",
+          onPress: this.logout,
+        },
+      ],
+    );
+  };
+
+  logout = async () => {
+    try {
+      await AsyncStorage.removeItem(SESSION_KEY);
+      await signOut(auth);
+      const { navigation } = this.props;
+      if (navigation) {
+        navigation.dispatch(
+          CommonActions.reset({ index: 0, routes: [{ name: "LogIn" }] }),
+        );
+      }
+    } catch (error) {
+      console.error("Error logging out", error);
+      Alert.alert(error.message);
+    }
+  };
+
+  render() {
+    // if (!this.state.fontsLoaded) return null;
+    const currentuid = auth.currentUser ? auth.currentUser.uid : "No User";
+    const {
+      school,
+      number,
+      username,
+      name,
+      email,
+      scannerVisible,
+      myQrVisible,
+      langModalVisible,
+      scanned,
+      cameraActive,
+    } = this.state;
+    const { t, language, setLanguage } = this.context;
+    const titleMarginTop = Platform.OS === "ios" ? 50 : 10;
+
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1, backgroundColor: "#1C1B1F" }}
+      >
+        <View style={styles.backgroundCircle1} />
+        <View style={styles.backgroundCircle2} />
+        <View style={styles.backgroundCircle3} />
+
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <AnimatedItem id="profile-title" index={0}>
+            <Text style={[styles.title, { marginTop: titleMarginTop }]}>
+              {t.profile}
+            </Text>
+          </AnimatedItem>
+          <AnimatedItem id="profile-subtitle" index={1}>
+            <Text style={styles.subtitle}>{t.profileSubtitle}</Text>
+          </AnimatedItem>
+
+          {/* Top-Buttons Row */}
+          {this.state.isOwnProfile && (
+            <AnimatedItem
+              id="profile-buttons"
+              index={2}
+              style={styles.topButtonsContainer}
+            >
+              <PressableScale
+                onPress={() => this.setState({ myQrVisible: true })}
+                containerStyle={styles.topButtonWrapper}
+                style={styles.topButton}
+                scaleTo={0.93}
+              >
+                <Ionicons
+                  name="qr-code-outline"
+                  size={18}
+                  color="#FF8C42"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>MyQR</Text>
+              </PressableScale>
+
+              <PressableScale
+                onPress={() => this.setState({ langModalVisible: true })}
+                containerStyle={styles.topButtonWrapper}
+                style={styles.topButton}
+                scaleTo={0.93}
+              >
+                <Ionicons
+                  name="language-outline"
+                  size={18}
+                  color="#FF8C42"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.topButtonText}>
+                  {t.language || "Language"}
+                </Text>
+              </PressableScale>
+            </AnimatedItem>
+          )}
+
+          {/* Modal: My QR */}
+          <Modal
+            visible={myQrVisible}
+            onRequestClose={() => this.setState({ myQrVisible: false })}
+            transparent
+            animationType="fade"
+          >
+            <View style={styles.modalOverlay}>
+              <PopCard id="profile-qr-popup" style={styles.qrCard}>
+                <Text style={styles.qrCardTitle}>My QR Code</Text>
+                <AnimatedItem id="profile-qr-code" index={2}>
+                  <View style={styles.qrCodeWrapper}>
+                    <QRCode
+                      value={buildOverviewLink(currentuid)}
+                      size={200}
+                      backgroundColor={"#ffffff"}
+                      color={"#000000"}
+                      quietZone={10}
+                    />
+                  </View>
+                </AnimatedItem>
+                <Text style={styles.qrSubtitle}>
+                  {username ? `@${username}` : "@loading..."}
+                </Text>
+                <PressableScale
+                  containerStyle={{ marginTop: 20, width: "100%" }}
+                  style={styles.actionButton}
+                  scaleTo={0.97}
+                  onPress={() => this.setState({ myQrVisible: false })}
+                >
+                  <Text style={styles.actionButtonText}>Close</Text>
+                </PressableScale>
+              </PopCard>
+            </View>
+          </Modal>
+
+          {/* Modal: Language Settings */}
+          <Modal
+            visible={langModalVisible}
+            onRequestClose={() => this.setState({ langModalVisible: false })}
+            transparent
+            animationType="fade"
+          >
+            <View style={styles.modalOverlay}>
+              <PopCard id="profile-lang-popup" style={styles.qrCard}>
+                <Text style={styles.qrCardTitle}>
+                  {t.language || "Select Language"}
+                </Text>
+
+                <View style={styles.modalLangRow}>
+                  <PressableScale
+                    style={[
+                      styles.modalLangBtn,
+                      language === "de" && styles.modalLangBtnActive,
+                    ]}
+                    scaleTo={0.97}
+                    onPress={() => setLanguage("de")}
+                  >
+                    <Text
+                      style={[
+                        styles.modalLangText,
+                        language === "de" && styles.modalLangTextActive,
+                      ]}
+                    >
+                      Deutsch 🇩🇪
+                    </Text>
+                  </PressableScale>
+
+                  <PressableScale
+                    style={[
+                      styles.modalLangBtn,
+                      language === "en" && styles.modalLangBtnActive,
+                    ]}
+                    scaleTo={0.97}
+                    onPress={() => setLanguage("en")}
+                  >
+                    <Text
+                      style={[
+                        styles.modalLangText,
+                        language === "en" && styles.modalLangTextActive,
+                      ]}
+                    >
+                      English 🇬🇧
+                    </Text>
+                  </PressableScale>
+                </View>
+
+                <PressableScale
+                  containerStyle={{ marginTop: 20, width: "100%" }}
+                  style={styles.actionButton}
+                  scaleTo={0.97}
+                  onPress={() => this.setState({ langModalVisible: false })}
+                >
+                  <Text style={styles.actionButtonText}>Close</Text>
+                </PressableScale>
+              </PopCard>
+            </View>
+          </Modal>
+
+          {/* Modal: Camera Scanner */}
+          <Modal
+            visible={scannerVisible}
+            onRequestClose={this.closeScanner}
+            animationType="none"
+            presentationStyle="fullscreen"
+            statusBarTranslucent
+            onShow={()=>this.setState({cameraActive: true})}
+          >
+            <View style={{ flex: 1, backgroundColor: "#000" }}>
+              {cameraActive && (
+                <CameraView
+                  style={{ flex: 1 }}
+                  facing="back"
+                  onCameraReady={() => this.setState({ isCameraReady: true })}
+                  OnMountError={(e) => console.log("camera mount error", e)}
+                  onBarcodeScanned={
+                    scanned ? undefined : this.handleBarCodeScanned
+                  }
+                  barcodeScannerSettings={{
+                    barcodeTypes: ["qr"],
+                  }}
+                />
+              )}
+              <View pointerEvents="box-none" style={styles.scannerOverlay}>
+                <View style={styles.scannedTargetWindow}>
+                  <PulseFrame />
+                  <PressableScale
+                    onPress={this.closeScanner}
+                    style={styles.actionButton}
+                    scaleTo={0.97}
+                  >
+                    <Text style={styles.actionButtonText}>Close</Text>
+                  </PressableScale>
+                </View>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Profile Card */}
+          <AnimatedItem id="profile-card" index={3}>
+            <View style={styles.card}>
+              <TextInput
+                style={styles.input}
+                value={username}
+                onChangeText={(username) => this.setState({ username })}
+                placeholder={t.username}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={name}
+                onChangeText={(name) => this.setState({ name })}
+                placeholder={t.name}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={email}
+                onChangeText={(email) => this.setState({ email })}
+                placeholder={t.email}
+                placeholderTextColor="#938F99"
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+              <TextInput
+                style={styles.input}
+                value={school}
+                onChangeText={(school) => this.setState({ school })}
+                placeholder={t.school}
+                placeholderTextColor="#938F99"
+              />
+              <TextInput
+                style={styles.input}
+                value={number}
+                onChangeText={(number) => this.setState({ number })}
+                placeholder={t.mobile}
+                placeholderTextColor="#938F99"
+                keyboardType="phone-pad"
+              />
+              <PressableScale
+                onPress={this.saveProfile}
+                style={styles.actionButton}
+                scaleTo={0.97}
+              >
+                <Text style={styles.actionButtonText}>{t.saveChanges}</Text>
+              </PressableScale>
+              {this.state.isOwnProfile && (
+                <PressableScale
+                  onPress={this.confirmPasswordReset}
+                  style={[styles.actionButton, styles.passwordResetButton]}
+                  scaleTo={0.97}
+                >
+                  <Ionicons name="mail-outline" size={18} color="#FF8C42" />
+                  <Text style={styles.actionButtonText}>{t.resetPassword}</Text>
+                </PressableScale>
+              )}
+            </View>
+          </AnimatedItem>
+
+          {/* Logout */}
+          {this.state.isOwnProfile && (
+            <AnimatedItem id="profile-logout" index={4}>
+              <PressableScale
+                onPress={this.confirmLogout}
+                style={styles.logoutButton}
+                scaleTo={0.97}
+              >
+                <Ionicons
+                  name="log-out-outline"
+                  size={20}
+                  color="#FF5A4F"
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.logoutButtonText}>
+                  {t.logout || "Log out"}
+                </Text>
+              </PressableScale>
+            </AnimatedItem>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+}
+
 const styles = StyleSheet.create({
-  overlay: {
+  scrollContent: {
+    flexGrow: 1,
+    padding: 24,
+    paddingBottom: 40,
+  },
+  backgroundCircle1: {
+    position: "absolute",
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    backgroundColor: "#FF6B35",
+    opacity: 0.3,
+    top: -100,
+    right: -100,
+  },
+  backgroundCircle2: {
+    position: "absolute",
+    width: 250,
+    height: 250,
+    borderRadius: 125,
+    backgroundColor: "#FF8C42",
+    opacity: 0.2,
+    bottom: 300,
+    left: 50,
+  },
+  backgroundCircle3: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "#FFB347",
+    opacity: 0.25,
+    bottom: -60,
+    right: -50,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: "700",
+    color: "#E6E0E9",
+    alignSelf: "center",
+    marginBottom: 8,
+    fontFamily: "font",
+  },
+  subtitle: {
+    fontSize: 16,
+    color: "#CAC4D0",
+    alignSelf: "center",
+    marginBottom: 20,
+    fontFamily: "font",
+  },
+  topButtonsContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 24,
+  },
+  topButtonWrapper: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.7)",
+  },
+  topButton: {
+    flexDirection: "row",
+    backgroundColor: "rgba(62, 56, 66, 0.45)",
+    borderRadius: 22,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 107, 53, 0.45)",
+    shadowColor: "rgba(255, 107, 53, 0.3)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  buttonIcon: {
+    marginRight: 4,
+  },
+  topButtonText: {
+    color: "#FF8C42",
+    fontSize: 13,
+    fontWeight: "600",
+    fontFamily: "font",
+  },
+  actionButton: {
+    backgroundColor: "rgba(62, 56, 66, 0.45)",
+    borderRadius: 22,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    marginTop: 10,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 107, 53, 0.45)",
+    shadowColor: "rgba(255, 107, 53, 0.3)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  actionButtonText: {
+    color: "#FF8C42",
+    fontSize: 15,
+    fontWeight: "600",
+    fontFamily: "font",
+  },
+  passwordResetButton: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+  },
+  logoutButton: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255, 90, 79, 0.08)",
+    borderRadius: 22,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 90, 79, 0.5)",
+  },
+  logoutButtonText: {
+    color: "#FF5A4F",
+    fontSize: 15,
+    fontWeight: "600",
+    fontFamily: "font",
+  },
+  qrWrapper: {
+    flex: 1,
+    backgroundColor: "#FFF",
+  },
+  scannerOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: "center",
     alignItems: "center",
   },
   card: {
-    width: "92%",
-    maxHeight: "80%",
-    backgroundColor: "#2B2930",
-    borderRadius: 24,
-    padding: 16,
+    backgroundColor: "rgba(43, 41, 48, 0.7)",
+    borderRadius: 28,
+    padding: 20,
     borderWidth: 1.5,
     borderColor: "rgba(255, 107, 53, 0.35)",
+    shadowColor: "rgba(255, 107, 53, 0.2)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 14,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#E6E0E9",
-    fontFamily: "font",
-  },
-  loader: {
-    marginVertical: 30,
-  },
-  errorText: {
-    color: "#FF5A4F",
+  input: {
+    backgroundColor: "#3E3842",
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     fontSize: 15,
-    textAlign: "center",
-    marginVertical: 20,
+    color: "#E6E0E9",
+    marginBottom: 10,
     fontFamily: "font",
   },
-  scroll: {
-    flexGrow: 0,
-    maxHeight: Dimensions.get("window").height * 0.5,
-  },
-  profileBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    backgroundColor: "rgba(62, 56, 66, 0.45)",
-    borderRadius: 16,
-    padding: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255, 107, 53, 0.25)",
-  },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#FF6B35",
-    alignItems: "center",
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
     justifyContent: "center",
-  },
-  avatarText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "800",
-    fontFamily: "font",
-  },
-  profileName: {
-    color: "#E6E0E9",
-    fontSize: 18,
-    fontWeight: "700",
-    fontFamily: "font",
-  },
-  profileMeta: {
-    color: "#CAC4D0",
-    fontSize: 14,
-    marginTop: 2,
-    fontFamily: "font",
-  },
-  sectionTitle: {
-    color: "#FF8C42",
-    fontSize: 16,
-    fontWeight: "700",
-    marginTop: 14,
-    marginBottom: 6,
-    fontFamily: "font",
-  },
-  emptyText: {
-    color: "#938F99",
-    fontSize: 14,
-    fontFamily: "font",
-  },
-  dayBadge: {
-    backgroundColor: "rgba(255, 107, 53, 0.15)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginBottom: 6,
-    alignSelf: "flex-start",
-  },
-  dayBadgeText: {
-    color: "#FF8C42",
-    fontSize: 11,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    fontFamily: "font",
-  },
-  row: {
-    flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 4,
+    position: "absolute",
+    right: 0,
+    left: 0,
+    top: 0,
+    bottom: 0,
   },
-  rowTitle: {
-    color: "#E6E0E9",
-    fontSize: 15,
-    fontWeight: "700",
+  scannedTargetWindow: {
+    width: 260,
+    height: 260,
+    borderRadius: 16,
+    backgroundColor: "transparent",
+  },
+  scanFramePulse: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 3,
+    borderColor: "#FF6B35",
+    borderRadius: 16,
+  },
+  qrCard: {
+    backgroundColor: "rgba(43, 41, 48, 0.96)",
+    padding: 20,
+    borderRadius: 28,
+    alignItems: "center",
+    width: "85%",
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 107, 53, 0.35)",
+    shadowColor: "rgba(255, 107, 53, 0.2)",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  qrCodeWrapper: {
+    padding: 10,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+  },
+  qrCardTitle: {
+    color: "#FFF",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 20,
     fontFamily: "font",
   },
-  rowMeta: {
+  qrSubtitle: {
     color: "#CAC4D0",
-    fontSize: 13,
-    marginTop: 1,
+    fontSize: 16,
+    marginTop: 12,
+    fontWeight: "500",
     fontFamily: "font",
   },
-  timeTag: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 10,
+  modalLangRow: {
+    width: "100%",
+    gap: 12,
+    marginBottom: 10,
   },
-  timeText: {
-    color: "#E6E0E9",
-    fontSize: 12,
-    fontWeight: "600",
+  modalLangBtn: {
+    width: "100%",
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: "#938F99",
+    alignItems: "center",
+    backgroundColor: "rgba(62, 56, 66, 0.3)",
+  },
+  modalLangBtnActive: {
+    backgroundColor: "#FF6B35",
+    borderColor: "#FF6B35",
+  },
+  modalLangText: {
+    color: "#CAC4D0",
+    fontWeight: "700",
+    fontSize: 15,
     fontFamily: "font",
+  },
+  modalLangTextActive: {
+    color: "#FFF",
   },
 });
